@@ -73,6 +73,10 @@ typedef struct {
 
 
 uint64_t ntp_get_time() {
+
+	setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+	tzset();
+
     struct timeval tv;
     if (gettimeofday(&tv, NULL)) {
         ESP_LOGE(TAG, "Failed to get current time for RTCP Sender Report");
@@ -178,6 +182,11 @@ static int session_send_rtcp_sender_report(streaming_session_t *session) {
     sender_report->rtp_timestamp = htonl(session->timestamp);
     sender_report->sender_packet_count = 0;
     sender_report->sender_octet_count = 0;
+
+    ESP_LOGI(TAG, "NTP time: %llu", (ntp_time));
+    ESP_LOGI(TAG, "RTP timestamp : %u", (session->timestamp));
+
+
 
     ESP_LOGI(TAG, "Sending RTCP sender report");
 
@@ -402,7 +411,7 @@ int grab_camera_frame(x264_picture_t *pic) {
     dinfo.scale_denom = VIDEO_IMAGE_SCALE_DENOM;
     jpeg_start_decompress(&dinfo);
 
-    ESP_LOGI(TAG, "JPEG output size: %dx%d", dinfo.output_width, dinfo.output_height);
+  //  ESP_LOGI(TAG, "JPEG output size: %dx%d", dinfo.output_width, dinfo.output_height);
 
     #define SAMPLE_SIZE 16
 
@@ -425,17 +434,17 @@ int grab_camera_frame(x264_picture_t *pic) {
         j += jpeg_read_raw_data(&dinfo, data, SAMPLE_SIZE);
     }
 
-    ESP_LOGI(TAG, "JPEG finishing");
+   // ESP_LOGI(TAG, "JPEG finishing");
 
     jpeg_finish_decompress(&dinfo);
 
-    ESP_LOGI(TAG, "JPEG destroying");
+ //   ESP_LOGI(TAG, "JPEG destroying");
     jpeg_destroy_decompress(&dinfo);
 
-    ESP_LOGI(TAG, "Returning frame buffer");
+  //  ESP_LOGI(TAG, "Returning frame buffer");
     esp_camera_fb_return(fb);
 
-    ESP_LOGI(TAG, "Done grabbing a frame");
+ //   ESP_LOGI(TAG, "Done grabbing a frame");
     return 0;
 }
 
@@ -446,10 +455,14 @@ static SemaphoreHandle_t streaming_sessions_mutex = NULL;
 static TaskHandle_t stream_task_handle = NULL;
 static EventGroupHandle_t stream_control_events;
 
+static TaskHandle_t stream_mgmt_task_handle = NULL;
+
+
 #define STREAM_CONTROL_EVENT_STOP (1 << 0)
 
 
 void stream_task(void *arg);
+void stream_mgmt_task(void *arg);
 
 
 int streaming_get_video_port() {
@@ -514,6 +527,9 @@ static void stream_start() {
 
     xTaskCreate(stream_task, "Camera Stream",
                 4096*8, NULL, 1, &stream_task_handle);
+
+    xTaskCreate(stream_mgmt_task, "Stream Management",
+                    512*8, NULL, 2, &stream_mgmt_task_handle);
 }
 
 static void stream_stop() {
@@ -546,9 +562,9 @@ static streaming_session_t *streaming_session_new(camera_session_t *settings) {
     session->started = false;
     session->failed = false;
 
-    session->timestamp = 0;
+    session->timestamp = get_time_millis();
 
-    session->sequence = 123;
+    session->sequence = 0;
     session->video_buffer = (uint8_t*) calloc(1, RTP_MAX_PACKET_LENGTH);
     if (!session->video_buffer) {
         ESP_LOGE(TAG, "Failed to allocate streaming session video buffer");
@@ -693,41 +709,39 @@ void stream_task(void *arg) {
     ESP_LOGI(TAG, "Executing streaming loop");
     ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 
+
+
     while (true) {
         if (xEventGroupGetBits(stream_control_events) & STREAM_CONTROL_EVENT_STOP)
             break;
 
-        ESP_LOGI(TAG, "Getting a frame");
-        ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-
-        if (grab_camera_frame(&pic) < 0) {
+        if (grab_camera_frame(&pic) < 0)
+        {
             continue;
         }
 
-        ESP_LOGI(TAG, "Encoding a frame");
-        ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
 
         frame_size = x264_encoder_encode(encoder, &nal, &i_nal, &pic, &pic_out);
         // TODO: free up pic_out
 
-        ESP_LOGI(TAG, "Encoded frame, size = %d", frame_size);
-        if( frame_size < 0 ) {
+        //ESP_LOGI(TAG, "Encoded frame, size = %d", frame_size);
+        if( frame_size <= 0 ) {
             ESP_LOGE(TAG, "Image H264 encoding failed error = %d", frame_size);
-            continue;
-        } else if( frame_size == 0 ) {
-            ESP_LOGE(TAG, "Frame is empty");
             continue;
         }
 
-        // dump_binary("Frame: ", nal->p_payload, 20);
 
         streaming_sessions_lock();
         for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
-            if (session->started)
-                continue;
 
-            session->started = true;
-            session->timestamp = get_time_millis() * 1000;
+        	if (!session->started)
+            {
+        		session->started = true;
+            }
+
+        	session->started = true;
+
+            session->timestamp = get_time_millis() /** 1000*/;
             if (session_send_rtcp_sender_report(session)) {
                 ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
                          session->settings->controller_ip_address,
@@ -735,12 +749,6 @@ void stream_task(void *arg) {
                 session->failed = true;
             }
         }
-
-        for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
-            session->timestamp = get_time_millis() * 1000;
-        }
-
-        // dump_binary("Frame: ", nal->p_payload, frame_size);
 
         uint8_t* end = nal->p_payload + frame_size;
         uint8_t* nal_data = find_nal_start(nal->p_payload, end);
@@ -759,38 +767,21 @@ void stream_task(void *arg) {
             nal_data = next_nal_data;
         }
 
-        ESP_LOGI(TAG, "Done sending frame data");
+        //ESP_LOGI(TAG, "Done sending frame data");
 
-        for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
+        for (streaming_session_t *session = streaming_sessions; session; session=session->next)
+        {
+        	session->timestamp = get_time_millis() /** 1000*/;
             if (session_flush_buffered(session, true))
+            {
                 session->failed = true;
-        }
-
-        // cleanup failed streaming sessions
-        while (streaming_sessions && streaming_sessions->failed) {
-            streaming_session_t *t = streaming_sessions;
-            streaming_sessions = streaming_sessions->next;
-            streaming_session_free(t);
-        }
-        if (!streaming_sessions) {
-            streaming_sessions_unlock();
-            break;
-        }
-
-        streaming_session_t *t = streaming_sessions;
-        while (t->next) {
-            if (t->next->failed) {
-                streaming_session_t *tt = t;
-                t = t->next;
-                streaming_session_free(tt);
-            } else {
-                t = t->next;
+                ESP_LOGE(TAG, "Session failed.");
             }
         }
 
         streaming_sessions_unlock();
 
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        vTaskDelay(15 / portTICK_PERIOD_MS);
     }
 
     x264_encoder_close(encoder);
@@ -801,4 +792,50 @@ void stream_task(void *arg) {
 
     stream_task_handle = NULL;
     vTaskDelete(NULL);
+}
+
+void stream_mgmt_task(void *arg)
+{
+	ESP_LOGI(TAG, "Starting stream mgmt task");
+	ESP_LOGI(TAG, "Total free memory: %u", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+
+	while (true)
+	{
+		if (xEventGroupGetBits(stream_control_events) & STREAM_CONTROL_EVENT_STOP)
+			break;
+
+		streaming_sessions_lock();
+
+		// cleanup failed streaming sessions
+				while (streaming_sessions && streaming_sessions->failed)
+				{
+					streaming_session_t *t = streaming_sessions;
+					streaming_sessions = streaming_sessions->next;
+					streaming_session_free(t);
+				}
+				if (!streaming_sessions) {
+					streaming_sessions_unlock();
+					break;
+				}
+
+				streaming_session_t *t = streaming_sessions;
+				while (t->next) {
+					if (t->next->failed) {
+						streaming_session_t *tt = t;
+						t = t->next;
+						streaming_session_free(tt);
+					} else {
+						t = t->next;
+					}
+				}
+
+		  streaming_sessions_unlock();
+
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+	}
+
+	ESP_LOGI(TAG, "Done with stream management");
+
+	stream_mgmt_task_handle = NULL;
+	vTaskDelete(NULL);
 }

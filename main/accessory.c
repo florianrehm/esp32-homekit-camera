@@ -17,6 +17,9 @@
 #include "camera_session.h"
 #include "crypto.h"
 #include "streaming.h"
+#include <time.h>
+#include <esp_sntp.h>
+
 
 #define STREAMING_STATUS_AVAILABLE 0
 #define STREAMING_STATUS_IN_USE 1
@@ -74,15 +77,62 @@ void camera_identify(homekit_value_t _value) {
     xTaskCreate(camera_identify_task, "Camera identify", 512, NULL, 2, NULL);
 }
 
+static camera_session_t *camera_sessions = NULL;
 
-homekit_value_t camera_streaming_status_get() {
-    tlv_values_t *tlv = tlv_new();
-    tlv_add_integer_value(tlv, 1, 1, STREAMING_STATUS_AVAILABLE);
-    return HOMEKIT_TLV(tlv);
+camera_session_t *camera_sessions_find_by_client_id(homekit_client_id_t client_id) {
+
+    if(!camera_sessions)
+    {
+    	return NULL;
+    }
+
+    camera_session_t *session = camera_sessions;
+
+    while (session) {
+        if (session->client_id == client_id) {
+            break;
+        }
+        session = session->next;
+    }
+
+    return session;
 }
 
 
-static camera_session_t *camera_sessions;
+homekit_value_t camera_streaming_status_get() {
+
+
+	//ESP_LOGI(TAG, "Creating streaming status response");
+
+	tlv_values_t *tlv = tlv_new();
+
+	homekit_client_id_t client_id = homekit_get_client_id();
+
+	if (!client_id) {
+			//ESP_LOGI(TAG, "No client found");
+			tlv_add_integer_value(tlv, 1, 1, STREAMING_STATUS_AVAILABLE);
+			return HOMEKIT_TLV(tlv);
+		}
+
+	camera_session_t *session = camera_sessions_find_by_client_id(client_id);
+	if (!session) {
+		//ESP_LOGI(TAG, "No session found");
+		tlv_add_integer_value(tlv, 1, 1, STREAMING_STATUS_AVAILABLE);
+		return HOMEKIT_TLV(tlv);
+	}
+
+	if(session)
+	{
+		//ESP_LOGI(TAG, "Streaming status -in use-");
+		tlv_add_integer_value(tlv, 1, 1, STREAMING_STATUS_IN_USE);
+		return HOMEKIT_TLV(tlv);
+	}
+
+	return HOMEKIT_TLV(tlv);
+}
+
+
+
 
 
 int camera_sessions_add(camera_session_t *session) {
@@ -124,19 +174,6 @@ void camera_sessions_remove(camera_session_t *session) {
             t = t->next;
         }
     }
-}
-
-
-camera_session_t *camera_sessions_find_by_client_id(homekit_client_id_t client_id) {
-    camera_session_t *session = camera_sessions;
-    while (session) {
-        if (session->client_id == client_id) {
-            break;
-        }
-        session = session->next;
-    }
-
-    return session;
 }
 
 
@@ -499,9 +536,10 @@ void camera_selected_rtp_configuration_set(homekit_value_t value) {
         case SESSION_COMMAND_END: {
             streaming_sessions_remove(session);
             camera_sessions_remove(session);
-
             break;
-        }
+         }
+        default:
+            break;
     }
 
     #undef error_msg
@@ -621,6 +659,14 @@ homekit_server_config_t config = {
 
 void camera_accessory_init() {
     ESP_LOGI(TAG, "Free heap: %d", xPortGetFreeHeapSize());
+
+    //get current time from ntp server
+
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+    sntp_init();
+
 
     // ESP_ERROR_CHECK(gpio_install_isr_service(0));
 #if CONFIG_LED_PIN >= 0
