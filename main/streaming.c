@@ -27,6 +27,7 @@
 
 
 #define RTCP_SR 200
+#define RTCP_SR_INTERVAL 5000000U
 
 #define RTP_VERSION 2
 #define RTCP_VERSION 2
@@ -196,6 +197,8 @@ static int session_send_rtcp_sender_report(streaming_session_t *session) {
         free(buffer);
         return -1;
     }
+    
+    session->rtcp_sr_timestamp = get_time_millis() * 1000;
 
     free(buffer);
 
@@ -562,7 +565,12 @@ static streaming_session_t *streaming_session_new(camera_session_t *settings) {
     session->started = false;
     session->failed = false;
 
+<<<<<<< HEAD
     session->timestamp = get_time_millis();
+=======
+    session->timestamp = 0;
+    session->rtcp_sr_timestamp = 0;
+>>>>>>> PR-fix_live_streaming
 
     session->sequence = 0;
     session->video_buffer = (uint8_t*) calloc(1, RTP_MAX_PACKET_LENGTH);
@@ -733,6 +741,7 @@ void stream_task(void *arg) {
 
         streaming_sessions_lock();
         for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
+<<<<<<< HEAD
 
         	if (!session->started)
             {
@@ -747,6 +756,20 @@ void stream_task(void *arg) {
                          session->settings->controller_ip_address,
                          session->settings->controller_video_port);
                 session->failed = true;
+=======
+            
+            session->started = true;
+            session->timestamp = get_time_millis() * 1000;
+            
+            if(session->rtcp_sr_timestamp + RTCP_SR_INTERVAL < session->timestamp){
+                
+                if (session_send_rtcp_sender_report(session)) {
+                    ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
+                             session->settings->controller_ip_address,
+                             session->settings->controller_video_port);
+                    session->failed = true;
+                }
+>>>>>>> PR-fix_live_streaming
             }
         }
 
