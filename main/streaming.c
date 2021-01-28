@@ -27,7 +27,7 @@
 
 
 #define RTCP_SR 200
-#define RTCP_SR_INTERVAL 5000000U
+#define RTCP_SR_INTERVAL 5000U
 
 #define RTP_VERSION 2
 #define RTCP_VERSION 2
@@ -198,7 +198,7 @@ static int session_send_rtcp_sender_report(streaming_session_t *session) {
         return -1;
     }
     
-    session->rtcp_sr_timestamp = get_time_millis() * 1000;
+    session->rtcp_sr_timestamp = get_time_millis();
 
     free(buffer);
 
@@ -529,10 +529,10 @@ static void stream_start() {
     xEventGroupClearBits(stream_control_events, STREAM_CONTROL_EVENT_STOP);
 
     xTaskCreate(stream_task, "Camera Stream",
-                4096*8, NULL, 1, &stream_task_handle);
+                4096*8, NULL, 2, &stream_task_handle);
 
     xTaskCreate(stream_mgmt_task, "Stream Management",
-                    512*8, NULL, 2, &stream_mgmt_task_handle);
+                    512*8, NULL, 1, &stream_mgmt_task_handle);
 }
 
 static void stream_stop() {
@@ -565,12 +565,9 @@ static streaming_session_t *streaming_session_new(camera_session_t *settings) {
     session->started = false;
     session->failed = false;
 
-<<<<<<< HEAD
     session->timestamp = get_time_millis();
-=======
-    session->timestamp = 0;
+
     session->rtcp_sr_timestamp = 0;
->>>>>>> PR-fix_live_streaming
 
     session->sequence = 0;
     session->video_buffer = (uint8_t*) calloc(1, RTP_MAX_PACKET_LENGTH);
@@ -740,38 +737,6 @@ void stream_task(void *arg) {
 
 
         streaming_sessions_lock();
-        for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
-<<<<<<< HEAD
-
-        	if (!session->started)
-            {
-        		session->started = true;
-            }
-
-        	session->started = true;
-
-            session->timestamp = get_time_millis() /** 1000*/;
-            if (session_send_rtcp_sender_report(session)) {
-                ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
-                         session->settings->controller_ip_address,
-                         session->settings->controller_video_port);
-                session->failed = true;
-=======
-            
-            session->started = true;
-            session->timestamp = get_time_millis() * 1000;
-            
-            if(session->rtcp_sr_timestamp + RTCP_SR_INTERVAL < session->timestamp){
-                
-                if (session_send_rtcp_sender_report(session)) {
-                    ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
-                             session->settings->controller_ip_address,
-                             session->settings->controller_video_port);
-                    session->failed = true;
-                }
->>>>>>> PR-fix_live_streaming
-            }
-        }
 
         uint8_t* end = nal->p_payload + frame_size;
         uint8_t* nal_data = find_nal_start(nal->p_payload, end);
@@ -829,32 +794,48 @@ void stream_mgmt_task(void *arg)
 
 		streaming_sessions_lock();
 
-		// cleanup failed streaming sessions
-				while (streaming_sessions && streaming_sessions->failed)
-				{
-					streaming_session_t *t = streaming_sessions;
-					streaming_sessions = streaming_sessions->next;
-					streaming_session_free(t);
-				}
-				if (!streaming_sessions) {
-					streaming_sessions_unlock();
-					break;
-				}
+		for (streaming_session_t *session = streaming_sessions; session; session=session->next) {
 
-				streaming_session_t *t = streaming_sessions;
-				while (t->next) {
-					if (t->next->failed) {
-						streaming_session_t *tt = t;
-						t = t->next;
-						streaming_session_free(tt);
-					} else {
-						t = t->next;
+				session->started = true;
+				session->timestamp = get_time_millis();
+
+				if(session->rtcp_sr_timestamp + RTCP_SR_INTERVAL < session->timestamp){
+
+					if (session_send_rtcp_sender_report(session)) {
+						ESP_LOGE(TAG, "Error sending RTCP SenderReport to %s:%d",
+								 session->settings->controller_ip_address,
+								 session->settings->controller_video_port);
+						session->failed = true;
 					}
 				}
+			}
+
+		// cleanup failed streaming sessions
+			while (streaming_sessions && streaming_sessions->failed)
+			{
+				streaming_session_t *t = streaming_sessions;
+				streaming_sessions = streaming_sessions->next;
+				streaming_session_free(t);
+			}
+			if (!streaming_sessions) {
+				streaming_sessions_unlock();
+				break;
+			}
+
+			streaming_session_t *t = streaming_sessions;
+			while (t->next) {
+				if (t->next->failed) {
+					streaming_session_t *tt = t;
+					t = t->next;
+					streaming_session_free(tt);
+				} else {
+					t = t->next;
+				}
+			}
 
 		  streaming_sessions_unlock();
 
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		vTaskDelay(5000 / portTICK_PERIOD_MS);
 	}
 
 	ESP_LOGI(TAG, "Done with stream management");
