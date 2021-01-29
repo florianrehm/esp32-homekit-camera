@@ -998,7 +998,12 @@ static ALWAYS_INLINE void macroblock_write_cabac_internal( x264_t *h, x264_cabac
         {
             if( plane_count == 3 )
             {
-                ALIGNED_4( uint8_t nnzbak[3][8] );
+                
+                ALIGNED_4(uint8_t nnzbak[3][8]);
+                
+                memset(nnzbak, 0, 24);
+                
+                
 
 /* Stupid nnz munging in the case that neighbors don't have
  * 8x8 transform enabled. */

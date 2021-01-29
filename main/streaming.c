@@ -184,10 +184,6 @@ static int session_send_rtcp_sender_report(streaming_session_t *session) {
     sender_report->sender_packet_count = 0;
     sender_report->sender_octet_count = 0;
 
-    ESP_LOGI(TAG, "NTP time: %llu", (ntp_time));
-    ESP_LOGI(TAG, "RTP timestamp : %u", (session->timestamp));
-
-
 
     ESP_LOGI(TAG, "Sending RTCP sender report");
 
@@ -736,10 +732,11 @@ void stream_task(void *arg) {
         }
 
 
-        streaming_sessions_lock();
 
         uint8_t* end = nal->p_payload + frame_size;
         uint8_t* nal_data = find_nal_start(nal->p_payload, end);
+
+        streaming_sessions_lock();
 
         while (nal_data < end) {
             nal_data += (nal_data[2] == 1) ? 3 : 4;  // skip header
